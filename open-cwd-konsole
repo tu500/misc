@@ -1,0 +1,82 @@
+#!/usr/bin/python3
+
+# Open a new konsole window with the same working directory as the currently
+# focused window. Works only for i3 window manager.
+#
+# Low effort script. Use at your own risk.
+#
+# Does not work with multiple sessions in single Konsole window. Probably has
+# other quirks, too.
+#
+# Depends on:
+#   i3-msg
+#   konsole
+#   qdbus
+
+import json
+import os
+import re
+import subprocess
+
+def get_window_dict():
+    dbus_clients = subprocess.check_output(['qdbus']).splitlines()
+
+    regex = re.compile(b'^ (org\.kde\.konsole-\d+)$')
+
+    x_window_ids = {}
+
+    for line in dbus_clients:
+        if (m := regex.match(line)) is not None:
+            konsole_dbus_id = m.group(1)
+            res = subprocess.check_output(['qdbus', konsole_dbus_id, '/konsole/MainWindow_1', 'org.kde.KMainWindow.winId'])
+            x_window_ids[int(res.strip())] = konsole_dbus_id
+
+    return x_window_ids
+
+def get_focused_x_window_id():
+    j = json.loads(subprocess.check_output(['i3-msg', '-t', 'get_tree']))
+
+    def recursive_tree_visitor(container):
+        if container['focused']:
+            return container
+
+        for child in container['nodes']:
+            r = recursive_tree_visitor(child)
+            if r is not None:
+                return r
+        return None
+
+    for output in j['nodes']:
+
+        for dock in output['nodes']:
+
+            if dock['name'] != 'content':
+                continue
+
+            for workspace in dock['nodes']:
+
+                r = recursive_tree_visitor(workspace)
+
+                if r is None:
+                    continue
+
+                assert 'window' in r
+                return r['window']
+
+    assert False
+
+def get_shell_pid(konsole_dbus_id):
+    r = subprocess.check_output(['qdbus', konsole_dbus_id, '/Sessions/1', 'org.kde.konsole.Session.processId'])
+    return int(r.strip())
+
+def main():
+    focused_x_window_id = get_focused_x_window_id()
+    window_dict = get_window_dict()
+    konsole_dbus_id = window_dict.get(focused_x_window_id, None)
+    assert konsole_dbus_id is not None
+    shell_pid = get_shell_pid(konsole_dbus_id)
+    target_dir = os.readlink(f'/proc/{shell_pid}/cwd')
+    subprocess.Popen(['konsole', '--workdir', target_dir])
+
+if __name__ == "__main__":
+    main()
